@@ -1,0 +1,10 @@
+[[llm_model]]
+provider                 = "claude"
+model                    = "claude-sonnet-5-5"
+input_usd_per_mtok       = 2.0
+output_usd_per_mtok      = 10.0
+cache_write_usd_per_mtok = 2.50
+cache_read_usd_per_mtok  = 0.20
+
+[agent]
+default_budget_usd = 2.0

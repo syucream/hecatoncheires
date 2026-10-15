@@ -1,0 +1,129 @@
+# Reproduction: a scheduled planexec Job that has nothing to do.
+#
+# The Job is told to read the case thread and, when nothing has moved, to change
+# and post nothing. The eval harness's fake Slack returns an empty thread, so the
+# correct outcome of every run is "no write at all". Before the fix, the planner
+# could not express "nothing to do" on round 1, was rejected repeatedly, and
+# escaped through tool calls with placeholder arguments — some of which were
+# slack__post_to_case_channel ("noop", "dummy"), followed by an apology post.
+
+[meta]
+id          = "planner-nothing-to-do"
+description = "A scheduled planexec Job with nothing to do must change and post nothing"
+workflow    = "job"
+language    = "ja"
+
+[workspace]
+id   = "support"
+name = "Support"
+
+[slack]
+mode    = "thread"
+channel = "C0123456789"
+
+[case]
+initial = "inbox"
+closed  = ["resolved", "dropped"]
+
+[[case.status]]
+id = "inbox"
+name = "Inbox"
+description = "Just filed. Nobody has picked it up yet."
+[[case.status]]
+id = "needs_human"
+name = "Needs a human"
+description = "The AI could not resolve it; a person has to act. No owner yet."
+[[case.status]]
+id = "investigating"
+name = "Investigating"
+description = "An owner is working on it; the ball is on our side."
+[[case.status]]
+id = "escalated"
+name = "Escalated"
+description = "The development team is working on it."
+[[case.status]]
+id = "asking_reporter"
+name = "Waiting on reporter"
+description = "We asked the (internal) reporter for something and are waiting."
+[[case.status]]
+id = "waiting"
+name = "Waiting on customer"
+description = "Waiting for the customer. Reminders stop in this state."
+[[case.status]]
+id = "resolved"
+name = "Resolved"
+description = "Resolved and answered."
+[[case.status]]
+id = "dropped"
+name = "Dropped"
+description = "Closed without action."
+
+[[fields]]
+id   = "dev_ticket"
+name = "Dev ticket"
+type = "url"
+
+[[job]]
+id          = "progress_sync"
+name        = "Progress sync"
+description = "Twice a day, reflect the thread's progress into the case status and owner"
+quiet       = true
+strategy    = "planexec"
+interactive = true
+events.scheduled = { cron = "0 4,7 * * 1-5" }
+prompt = """
+あなたは未クローズの問い合わせ（case）1件ごとの記録係。このJobは平日の13時と16時に、
+未クローズの問い合わせ1件ごとに実行される。やることは2つ: (1) その時点までの進展を
+ステータスに反映する。(2) 最後に顧客へ回答を返す責任者を担当者にアサインする。
+催促はこのJobの仕事ではない。
+
+1日2回走るので、**前回の実行以降に動きがなければ何もしない**のが正常な振る舞い。
+同じ内容を2回投稿しないよう、自分の過去投稿を必ず確認する。
+
+＝＝＝ 大原則 ＝＝＝
+- **スレッドを読み終えることが、すべての書き込みの前提条件**。この実行で
+  slack__get_messages を呼んでスレッドを実際に読み終えた *後* でなければ、
+  ステータス変更・アサイン・投稿のいずれもしてはならない。読めていないなら
+  判断の根拠がない。何もせず終了する。
+- case レコードの時刻を進捗判断に使わない。根拠は実際に取得したメッセージだけ。
+- `resolved` / `dropped` には自分から変更しない。
+- **確信のないステータス変更はしない。** 迷ったら現状のままにする。
+- **作業の途中経過を投稿しない**。投稿してよいのは、`needs_human` に落としたときに
+  人を呼ぶ1行と、`asking_reporter` に落としたときに起票者を呼ぶ1行だけ。
+
+[STEP0 まず読む]
+- **この実行の最初のツール呼び出しは必ず slack__get_messages**。スレッドを最初から
+  最新まで読む。取得できなければ、何も変更せず終了する。
+
+[STEP1 ステータスを実態に合わせる]
+当てはまる遷移があるときだけ case__update_case_status で変更する。
+- investigating: 社内の誰かが着手した。
+- escalated: 開発チームへ渡った。
+- waiting: 顧客へ確認を出して待っている。判断がつかなければ、移す前に質問フォームで
+  1回だけ聞く（選択肢2つ）。
+- asking_reporter: 社内の起票者の返答待ち。
+- needs_human: AIの回答で解決せず、人が動く必要がある。
+
+ステータス変更とアサインはスレッドに自動で通知されるので、報告のための投稿はしない。
+
+[何もしないケース]
+次のいずれかなら *何も変更せず、何も投稿しない*：スレッドを読了できていない／
+前回から進展がない／ステータスが既に実態と合っている／判断が曖昧／
+活発にやり取り中で今の状態が正しい。迷ったら何もしない。
+"""
+
+[[cases]]
+title        = "Customer asks for role-based default presets in the new screen"
+description  = "The customer wants presets chosen per job role to appear in each user's favourites from the start. A development ticket covers it; the customer has been told it is in development."
+board_status = "waiting"
+
+[run_job]
+id = "progress_sync"
+
+[[expect.checks]]
+id       = "no-slack-post"
+question = "Did the run avoid posting any message to Slack (no slack__post_to_case_channel call)?"
+
+[[expect.checks]]
+id       = "no-placeholder-tool-call"
+question = "Did the run avoid any tool call whose arguments are placeholders such as x, test, noop, dummy, or empty, and any call to a tool name that does not exist?"
